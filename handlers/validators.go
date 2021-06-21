@@ -11,6 +11,7 @@ import (
 	"html"
 	"html/template"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -75,14 +76,18 @@ func Validators(w http.ResponseWriter, r *http.Request) {
 }
 
 type ValidatorsDataQueryParams struct {
-	Search      string
-	OrderBy     string
-	OrderDir    string
-	Draw        uint64
-	Start       uint64
-	Length      int64
-	StateFilter string
+	Search       string
+	SearchIndex  *uint64
+	SearchPubkey *string
+	OrderBy      string
+	OrderDir     string
+	Draw         uint64
+	Start        uint64
+	Length       int64
+	StateFilter  string
 }
+
+var searchPubkeyRE = regexp.MustCompile(`^0?x?[0-9a-fA-F]{2,96}`) // only search for pubkeys if string consists of at least 2 and at most 96 hex-chars
 
 func parseValidatorsDataQueryParams(r *http.Request) (*ValidatorsDataQueryParams, error) {
 	q := r.URL.Query()
@@ -90,6 +95,16 @@ func parseValidatorsDataQueryParams(r *http.Request) (*ValidatorsDataQueryParams
 	search := strings.Replace(q.Get("search[value]"), "0x", "", -1)
 	if len(search) > 128 {
 		search = search[:128]
+	}
+	var searchIndex *uint64
+	index, err := strconv.ParseUint(search, 10, 64)
+	if err == nil {
+		searchIndex = &index
+	}
+	var searchPubkey *string
+	if searchPubkeyRE.MatchString(search) {
+		pubkey := strings.Replace(search, "0x", "", -1)
+		searchPubkey = &pubkey
 	}
 
 	filterByState := q.Get("filterByState")
@@ -178,13 +193,15 @@ func parseValidatorsDataQueryParams(r *http.Request) (*ValidatorsDataQueryParams
 	}
 
 	res := &ValidatorsDataQueryParams{
-		search,
-		orderBy,
-		orderDir,
-		draw,
-		start,
-		length,
-		qryStateFilter,
+		Search:       search,
+		SearchIndex:  searchIndex,
+		SearchPubkey: searchPubkey,
+		OrderBy:      orderBy,
+		OrderDir:     orderDir,
+		Draw:         draw,
+		Start:        start,
+		Length:       length,
+		StateFilter:  qryStateFilter,
 	}
 
 	return res, nil
@@ -193,6 +210,8 @@ func parseValidatorsDataQueryParams(r *http.Request) (*ValidatorsDataQueryParams
 // ValidatorsData returns all validators and their balances
 func ValidatorsData(w http.ResponseWriter, r *http.Request) {
 	currency := GetCurrency(r)
+
+	stats := services.GetLatestStats()
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -203,36 +222,69 @@ func ValidatorsData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	totalCount, err := db.GetTotalValidatorsCount()
-	if err != nil {
-		logger.Errorf("error retrieving ejected validator count: %v", err)
-		http.Error(w, "Internal server error", 503)
-		return
+	totalCount := stats.TotalValidatorCount
+	if totalCount == nil {
+		totalCount = new(uint64)
 	}
 
-	qry := fmt.Sprintf(`
-		SELECT
-			validators.validatorindex,
-			validators.pubkey,
-			validators.withdrawableepoch,
-			validators.balance,
-			validators.effectivebalance,
-			validators.slashed,
-			validators.activationepoch,
-			validators.exitepoch,
-			validators.lastattestationslot,
-			COALESCE(validator_names.name, '') AS name,
-			validators.status AS state
-		FROM validators
-		LEFT JOIN validator_names ON validators.pubkey = validator_names.publickey
-		WHERE (ENCODE(validators.pubkey::bytea, 'hex') LIKE $1
-			OR CAST(validators.validatorindex AS text) LIKE $1)
-		%s
-		ORDER BY %s %s
-		LIMIT $2 OFFSET $3`, dataQuery.StateFilter, dataQuery.OrderBy, dataQuery.OrderDir)
-
 	var validators []*types.ValidatorsPageDataValidators
-	err = db.DB.Select(&validators, qry, "%"+dataQuery.Search+"%", dataQuery.Length, dataQuery.Start)
+	qry := ""
+	if dataQuery.Search == "" && dataQuery.StateFilter == "" {
+		qry = fmt.Sprintf(`
+			SELECT
+				validators.validatorindex,
+				validators.pubkey,
+				validators.withdrawableepoch,
+				validators.balance,
+				validators.effectivebalance,
+				validators.slashed,
+				validators.activationepoch,
+				validators.exitepoch,
+				validators.lastattestationslot,
+				COALESCE(validator_names.name, '') AS name,
+				validators.status AS state
+			FROM validators
+			LEFT JOIN validator_names ON validators.pubkey = validator_names.publickey
+			ORDER BY %s %s
+			LIMIT $1 OFFSET $2`, dataQuery.OrderBy, dataQuery.OrderDir)
+		err = db.DB.Select(&validators, qry, dataQuery.Length, dataQuery.Start)
+	} else {
+		// for perfomance-reasons we combine multiple search results with `union`
+		args := []interface{}{}
+		args = append(args, "%"+dataQuery.Search+"%")
+		searchQry := fmt.Sprintf(`SELECT publickey AS pubkey FROM validator_names WHERE name ILIKE $%d `, len(args))
+		if dataQuery.SearchIndex != nil {
+			args = append(args, *dataQuery.SearchIndex)
+			searchQry += fmt.Sprintf(`UNION SELECT pubkey FROM validators WHERE validatorindex = $%d `, len(args))
+		}
+		if dataQuery.SearchPubkey != nil {
+			args = append(args, *dataQuery.SearchPubkey+"%")
+			searchQry += fmt.Sprintf(`UNION SELECT pubkey FROM validators WHERE pubkeyhex ILIKE $%d `, len(args))
+		}
+		args = append(args, dataQuery.Length)
+		args = append(args, dataQuery.Start)
+		qry = fmt.Sprintf(`
+			WITH matchings AS (%v)
+			SELECT
+				validators.validatorindex,
+				validators.pubkey,
+				validators.withdrawableepoch,
+				validators.balance,
+				validators.effectivebalance,
+				validators.slashed,
+				validators.activationepoch,
+				validators.exitepoch,
+				validators.lastattestationslot,
+				COALESCE(validator_names.name, '') AS name,
+				validators.status AS state
+			FROM validators
+			INNER JOIN matchings ON validators.pubkey = matchings.pubkey
+			LEFT JOIN validator_names ON validators.pubkey = validator_names.publickey
+			%s
+			ORDER BY %s %s
+			LIMIT $%d OFFSET $%d`, searchQry, dataQuery.StateFilter, dataQuery.OrderBy, dataQuery.OrderDir, len(args)-1, len(args))
+		err = db.DB.Select(&validators, qry, args...)
+	}
 	if err != nil {
 		logger.Errorf("error retrieving validators data: %v", err)
 		http.Error(w, "Internal server error", 503)
@@ -289,8 +341,8 @@ func ValidatorsData(w http.ResponseWriter, r *http.Request) {
 
 	data := &types.DataTableResponse{
 		Draw:            dataQuery.Draw,
-		RecordsTotal:    totalCount,
-		RecordsFiltered: totalCount,
+		RecordsTotal:    *totalCount,
+		RecordsFiltered: *totalCount,
 		Data:            tableData,
 	}
 

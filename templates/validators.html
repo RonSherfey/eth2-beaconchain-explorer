@@ -1,6 +1,6 @@
 {{ define "js"}}
-    <script type="text/javascript" src="/bundle/js/datatables.min.js"></script>
-    <script type="text/javascript" src="/bundle/js/datatable_input.js"></script>
+    <script type="text/javascript" src="/js/datatables.min.js"></script>
+    <script type="text/javascript" src="/js/datatable_input.js"></script>
     <script>
         var validatorsDataTable;
         var stateFilterDropDownHtml = `<div><label>
@@ -70,7 +70,11 @@
                 if (possibleStates[hashState]) state = hashState
             }
 
+            var usp = new URLSearchParams(window.location.search)
+            var q = usp.get('q')
+
             validatorsDataTable = $('#validators').DataTable({
+                search: q ? {search:q} : null,
                 pageLength: 25,
                 processing: true,
                 serverSide: true,
@@ -196,11 +200,19 @@
                     },
                 ]
             })
+            $("#validators_filter > label > input").on('input', function (ev) {
+                if (ev && ev.target && ev.target.value) {
+                    var newUrl = window.location.pathname + "?q=" + encodeURIComponent(ev.target.value)
+                    window.history.replaceState(null, 'Validators Overview', newUrl)
+                } else {
+                    window.history.replaceState(null, 'Validators Overview', window.location.pathname)
+                }
+            })
         })
     </script>
 {{end}} {{ define "css"}}
     <link rel="stylesheet" type="text/css"
-          href="/bundle/css//datatables.min.css"/>
+          href="/css//datatables.min.css"/>
     <style>
         .dataTables_wrapper {
             min-height: 400px; /* this is needed to make the bootstrap-dropdown work when the table is empty */

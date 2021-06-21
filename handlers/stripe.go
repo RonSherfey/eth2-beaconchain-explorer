@@ -54,16 +54,26 @@ func StripeCreateCheckoutSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rq := "required"
+
+	// taxRates := utils.StripeDynamicRatesLive
+	// if strings.HasPrefix(utils.Config.Frontend.Stripe.SecretKey, "sk_test") {
+	// 	taxRates = utils.StripeDynamicRatesTest
+	// }
+
+	if req.Price != utils.Config.Frontend.Stripe.Sapphire && req.Price != utils.Config.Frontend.Stripe.Emerald && req.Price != utils.Config.Frontend.Stripe.Diamond {
+		http.Error(w, "Error invalid price item provided. Must be the price ID of Sapphire, Emerald or Diamond", http.StatusBadRequest)
+		logger.Errorf("error invalid stripe price id provided: %v, expected one of [%v, %v, %v]", req.Price, utils.Config.Frontend.Stripe.Sapphire, utils.Config.Frontend.Stripe.Emerald, utils.Config.Frontend.Stripe.Diamond)
+		return
+	}
+
+	enabled := true
+	auto := "auto"
+
 	params := &stripe.CheckoutSessionParams{
-		SuccessURL: stripe.String("https://" + utils.Config.Frontend.SiteDomain + "/user/settings"),
+		SuccessURL: stripe.String("https://" + utils.Config.Frontend.SiteDomain + "/user/settings#api"),
 		CancelURL:  stripe.String("https://" + utils.Config.Frontend.SiteDomain + "/pricing"),
 		// if the customer exists use the existing customer
-		SubscriptionData: &stripe.CheckoutSessionSubscriptionDataParams{
-			// DefaultTaxRates: stripe.StringSlice([]string{
-			// "txr_1HqcFcBiORp9oTlKnyNWVp4r",
-			// "txr_1HqdWaBiORp9oTlKkij8L6dU",
-			// }),
-		},
+		SubscriptionData: &stripe.CheckoutSessionSubscriptionDataParams{},
 
 		BillingAddressCollection: &rq,
 		CustomerEmail:            &subscription.Email,
@@ -73,16 +83,25 @@ func StripeCreateCheckoutSession(w http.ResponseWriter, r *http.Request) {
 		Mode: stripe.String(string(stripe.CheckoutSessionModeSubscription)),
 		LineItems: []*stripe.CheckoutSessionLineItemParams{
 			&stripe.CheckoutSessionLineItemParams{
-				Price:           stripe.String(req.Price),
-				Quantity:        stripe.Int64(1),
-				DynamicTaxRates: utils.StripeDynamicRatesLive,
+				Price:    stripe.String(req.Price),
+				Quantity: stripe.Int64(1),
+				// DynamicTaxRates: taxRates,
 			},
 		},
+		AutomaticTax: &stripe.CheckoutSessionAutomaticTaxParams{
+			Enabled: &enabled,
+		},
+		TaxIDCollection: &stripe.CheckoutSessionTaxIDCollectionParams{
+			Enabled: &enabled,
+		},
 	}
-
 	if subscription.CustomerID != nil {
 		params.CustomerEmail = nil
 		params.Customer = subscription.CustomerID
+		params.CustomerUpdate = &stripe.CheckoutSessionCustomerUpdateParams{
+			Name:    &auto,
+			Address: &auto,
+		}
 	}
 
 	s, err := session.New(params)
@@ -268,13 +287,13 @@ func StripeWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if subscription.Items == nil {
-			logger.WithError(err).Error("error updating subscription no items found", subscription)
+			logger.Error("error updating subscription no items found", subscription)
 			http.Error(w, "error updating subscription no items found", 503)
 			return
 		}
 
 		if len(subscription.Items.Data) == 0 {
-			logger.WithError(err).Error("error updating subscription no items found", subscription)
+			logger.Error("error updating subscription no items found", subscription)
 			http.Error(w, "error updating subscription no items found", 503)
 			return
 		}
@@ -347,20 +366,20 @@ func StripeWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if invoice.Lines == nil {
-			logger.WithError(err).Error("error processing invoice and updating subscription no items found", invoice.ID)
-			http.Error(w, "error processing invoice and updating subscription no items found", 503)
+			logger.Warn("warning processing invoice and updating subscription no items found", invoice.ID)
+			// http.Error(w, "error processing invoice and updating subscription no items found", 503)
 			return
 		}
 
 		if len(invoice.Lines.Data) == 0 {
-			logger.WithError(err).Error("error processing invoice and updating subscription no items found", invoice.ID)
-			http.Error(w, "error processing invoice and updating subscription no items found", 503)
+			logger.Warn("warning processing invoice and updating subscription no items found", invoice.ID)
+			// http.Error(w, "error processing invoice and updating subscription no items found", 503)
 			return
 		}
 
 		if len(invoice.Lines.Data[0].Subscription) == 0 {
-			logger.WithError(err).Error("error processing invoice and updating subscription no items found", invoice.ID)
-			http.Error(w, "error processing invoice and updating subscription line items does not include a subscription", 503)
+			logger.Warn("error processing invoice and updating subscription no items found", invoice.ID)
+			// http.Error(w, "error processing invoice and updating subscription line items does not include a subscription", 503)
 			return
 		}
 
@@ -393,7 +412,7 @@ func emailCustomerAboutFailedPayment(email string) {
 	msg := fmt.Sprintf("Payment processing failed. Could not provision your API key. Please contact support at support@beaconcha.in. Manage Subscription: https://" + utils.Config.Frontend.SiteDomain + "/user/settings")
 	// escape html
 	msg = template.HTMLEscapeString(msg)
-	err := mail.SendMail(email, "Failed Payment", msg)
+	err := mail.SendMail(email, "Failed Payment", msg, []types.EmailAttachment{})
 	if err != nil {
 		logger.Errorf("error sending failed payment mail: %v", err)
 		return
@@ -407,10 +426,10 @@ func emailCustomerAboutPlanChange(email, plan string) {
 	} else if plan == utils.Config.Frontend.Stripe.Diamond {
 		p = "Diamond"
 	}
-	msg := fmt.Sprintf("You have successfully changed your payment plan to " + p + " to manage your subscription go to https://" + utils.Config.Frontend.SiteDomain + "/user/settings")
+	msg := fmt.Sprintf("You have successfully changed your payment plan to " + p + " to manage your subscription go to https://" + utils.Config.Frontend.SiteDomain + "/user/settings#api")
 	// escape html
 	msg = template.HTMLEscapeString(msg)
-	err := mail.SendMail(email, "Payment Plan Change", msg)
+	err := mail.SendMail(email, "Payment Plan Change", msg, []types.EmailAttachment{})
 	if err != nil {
 		logger.Errorf("error sending order fulfillment email: %v", err)
 		return

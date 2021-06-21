@@ -1,4 +1,3 @@
-
 function createBlock(x, y) {
   use = document.createElementNS("http://www.w3.org/2000/svg","use")
   // use.setAttributeNS(null, "style", `transform: translate(calc(${x} * var(--disperse-factor)), calc(${y} * var(--disperse-factor)));`)
@@ -34,7 +33,7 @@ function appendBlocks(blocks) {
 }
 
 var selectedBTNindex = null
-const VALLIMIT = 200
+var VALLIMIT = 280
 function showValidatorHist (index) {
   if ($.fn.dataTable.isDataTable('#dash-validator-history-table')){
         $('#dash-validator-history-table').DataTable().destroy();
@@ -240,19 +239,6 @@ function showValidatorsInSearch(qty){
   }
 }
 
-function setValidatorEffectiveness(elem, eff){
-  if (elem===undefined) return
-  eff=parseInt(eff)
-  if (eff >= 100) {
-    $('#'+elem).html(`<span class="text-success"> ${eff}% - Perfect <i class="fas fa-grin-stars"></i>`)
-  } else if (eff > 80) {
-    $('#'+elem).html(`<span class="text-success"> ${eff}% - Good <i class="fas fa-smile"></i></span>`)
-  } else if (eff > 60) {
-    $('#'+elem).html(`<span class="text-warning"> ${eff}% - Fair <i class="fas fa-meh"></i></span>`)
-  } else {
-    $('#'+elem).html(`<span class="text-danger"> ${eff}% - Bad <i class="fas fa-frown"></i></span>`)
-  }
-}
 
 function renderProposedHistoryTable(data){
   if ($.fn.dataTable.isDataTable('#proposals-table')){
@@ -331,6 +317,10 @@ function switchFrom(el1, el2, el3, el4){
 var firstSwitch=true
 
 $(document).ready(function() {
+  $("#rewards-button").on("click", ()=>{
+    localStorage.setItem("load_dashboard_validators", true)
+    window.location.href = "/rewards"
+  })
   
   $('.proposal-switch').on('click', ()=>{
     if ($('.switch-chart').hasClass("proposal-switch-selected")){
@@ -443,7 +433,7 @@ $(document).ready(function() {
         render: function(data, type, row, meta) {
           if (type == 'sort' || type == 'type') return data
           // return '<a href="/validator/' + data + '">' + data + '</a>'
-          return `<span class="m-0 p-1 hbtn" id="dropdownMenuButton${data}" style="cursor: pointer;" onclick="showValidatorHist('${data}')">
+          return `<span class="m-0 p-2 hbtn" id="dropdownMenuButton${data}" style="cursor: pointer;" onclick="showValidatorHist('${data}')">
                       ${data}
                   </span>
                  `
@@ -593,7 +583,7 @@ $(document).ready(function() {
       templates: {
         header: '<h3>Validators by ETH1 Addresses</h3>',
         suggestion: function(data) {
-          var len = data.validator_indices.length > 100 ? '100+' : data.validator_indices.length 
+          var len = data.validator_indices.length > VALLIMIT ? VALLIMIT+'+' : data.validator_indices.length 
           return `<div class="text-monospace high-contrast" style="display:flex"><div class="text-truncate" style="flex:1 1 auto;">${data.eth1_address}</div><div style="max-width:fit-content;white-space:nowrap;">${len}</div></div>`
         }
       }
@@ -606,7 +596,7 @@ $(document).ready(function() {
       templates: {
         header: '<h3>Validators by Graffiti</h3>',
         suggestion: function(data) {
-          var len = data.validator_indices.length > 100 ? '100+' : data.validator_indices.length 
+          var len = data.validator_indices.length > VALLIMIT ? VALLIMIT+'+' : data.validator_indices.length 
           return `<div class="text-monospace high-contrast" style="display:flex"><div class="text-truncate" style="flex:1 1 auto;">${data.graffiti}</div><div style="max-width:fit-content;white-space:nowrap;">${len}</div></div>`
         }
       }
@@ -619,7 +609,7 @@ $(document).ready(function() {
       templates: {
         header: '<h3>Validators by Name</h3>',
         suggestion: function(data) {
-          var len = data.validator_indices.length > 100 ? '100+' : data.validator_indices.length 
+          var len = data.validator_indices.length > VALLIMIT ? VALLIMIT+'+' : data.validator_indices.length 
           return `<div class="text-monospace high-contrast" style="display:flex"><div class="text-truncate" style="flex:1 1 auto;">${data.name}</div><div style="max-width:fit-content;white-space:nowrap;">${len}</div></div>`
         }
       }
@@ -909,6 +899,7 @@ $(document).ready(function() {
       // } else {
       //   appendBlocks(xBlocks.slice(0, state.validators.length * 3 - 1))
       // }
+      document.querySelector('#rewards-button').style.visibility = "visible"
       document.querySelector('#bookmark-button').style.visibility = "visible"
       document.querySelector('#copy-button').style.visibility = "visible"
       document.querySelector('#clear-search').style.visibility = "visible"
@@ -919,25 +910,18 @@ $(document).ready(function() {
           var t1 = Date.now()
           console.log(`loaded earnings: fetch: ${t1-t0}ms`)
           if (!result) return
-          // document.getElementById('stats').style.display = 'flex'
-          var lastDay = (result.lastDay / 1e9 * exchangeRate).toFixed(4)
-          var lastWeek = (result.lastWeek / 1e9 * exchangeRate).toFixed(4)
-          var lastMonth = (result.lastMonth / 1e9 * exchangeRate).toFixed(4)
-          var total = (result.total / 1e9 * exchangeRate)
-          var totalDeposits = (result.totalDeposits / 1e9 * exchangeRate)
-          var totalChange = total+totalDeposits
 
-          // console.log(totalChange, total, exchangeRate, "\n", result.total, result.totalDeposits)
-          addChange("#earnings-day", lastDay)
-          addChange("#earnings-week", lastWeek)
-          addChange("#earnings-month", lastMonth)
+          // addChange("#earnings-day", result.lastDay)
+          // addChange("#earnings-week", result.lastWeek)
+          // addChange("#earnings-month", result.lastMonth)
 
-          document.querySelector('#earnings-day').innerHTML = (lastDay || '0.000') + " <span class='small text-muted'>" + currency + "</span>"
-          document.querySelector('#earnings-week').innerHTML = (lastWeek || '0.000') + " <span class='small text-muted'>" + currency + "</span>"
-          document.querySelector('#earnings-month').innerHTML = (lastMonth || '0.000') + " <span class='small text-muted'>" + currency + "</span>"
-          document.querySelector('#earnings-total').innerHTML = (totalChange.toFixed(2) || '0.000') + `<span id="earnings-total-change">${total.toFixed(4)}</span>` + " <span class='small text-muted'>" + currency + "</span>"
-          
-          addChange("#earnings-total-change", total)
+          document.querySelector('#earnings-day').innerHTML = (result.lastDayFormatted || '0.000') 
+          document.querySelector('#earnings-week').innerHTML = (result.lastWeekFormatted || '0.000') 
+          document.querySelector('#earnings-month').innerHTML = (result.lastMonthFormatted || '0.000')
+          document.querySelector('#earnings-total').innerHTML = (result.totalChangeFormatted || '0.000') + ` <span class="d-block" id="earnings-total-change">${result.totalFormatted}</span>`
+          $("#earnings-total span:first").removeClass("text-success").removeClass("text-danger")
+          $("#earnings-total span:first").html($("#earnings-total span:first").html().replace("+", ""))
+          // addChange("#earnings-total-change", result.total)
         }
       })
       $.ajax({
@@ -988,6 +972,7 @@ $(document).ready(function() {
 
     } else {
       document.querySelector('#copy-button').style.visibility = "hidden"
+      document.querySelector('#rewards-button').style.visibility = "hidden"
       document.querySelector('#bookmark-button').style.visibility = "hidden"
       document.querySelector('#clear-search').style.visibility = "hidden"
       // window.location = "/dashboard"

@@ -68,12 +68,48 @@ func UserSettings(w http.ResponseWriter, r *http.Request) {
 		logger.Errorf("Error retrieving the paired devices for user: %v %v", user.UserID, err)
 		pairedDevices = nil
 	}
+	statsSharing, err := db.GetUserMonitorSharingSetting(user.UserID)
+	if err != nil {
+		logger.Errorf("Error retrieving stats sharing setting: %v %v", user.UserID, err)
+		statsSharing = false
+	}
+
+	maxDaily := 10000
+	maxMonthly := 30000
+	if subscription.PriceID != nil {
+		if *subscription.PriceID == utils.Config.Frontend.Stripe.Sapphire {
+			maxDaily = 100000
+			maxMonthly = 500000
+		} else if *subscription.PriceID == utils.Config.Frontend.Stripe.Emerald {
+			maxDaily = 200000
+			maxMonthly = 1000000
+		} else if *subscription.PriceID == utils.Config.Frontend.Stripe.Diamond {
+			maxDaily = -1
+			maxMonthly = 4000000
+		}
+	}
+
+	userSettingsData.ApiStatistics = &types.ApiStatistics{}
+
+	if subscription.ApiKey != nil && len(*subscription.ApiKey) > 0 {
+		apiStats, err := db.GetUserAPIKeyStatistics(subscription.ApiKey)
+		if err != nil {
+			logger.Errorf("Error retrieving user api key usage: %v %v", user.UserID, err)
+		}
+		if apiStats != nil {
+			userSettingsData.ApiStatistics = apiStats
+		}
+	}
+
+	userSettingsData.ApiStatistics.MaxDaily = &maxDaily
+	userSettingsData.ApiStatistics.MaxMonthly = &maxMonthly
 
 	userSettingsData.PairedDevices = pairedDevices
 	userSettingsData.Subscription = subscription
 	userSettingsData.Sapphire = &utils.Config.Frontend.Stripe.Sapphire
 	userSettingsData.Emerald = &utils.Config.Frontend.Stripe.Emerald
 	userSettingsData.Diamond = &utils.Config.Frontend.Stripe.Diamond
+	userSettingsData.ShareMonitoringData = statsSharing
 	userSettingsData.Flashes = utils.GetFlashes(w, r, authSessionName)
 	userSettingsData.CsrfField = csrf.TemplateField(r)
 
@@ -267,6 +303,7 @@ func UserNotificationsData(w http.ResponseWriter, r *http.Request) {
 	user := getUser(w, r)
 
 	type watchlistSubscription struct {
+		Index     *uint64 // consider validators that only have deposited but do not have an index yet
 		Publickey []byte
 		Balance   uint64
 		Events    *pq.StringArray
@@ -274,22 +311,20 @@ func UserNotificationsData(w http.ResponseWriter, r *http.Request) {
 
 	wl := []watchlistSubscription{}
 	err = db.DB.Select(&wl, `
-	SELECT 
+		SELECT 
+			validators.validatorindex as index,
 			users_validators_tags.validator_publickey as publickey,
 			COALESCE (MAX(validators.balance), 0) as balance,
 			ARRAY_REMOVE(ARRAY_AGG(users_subscriptions.event_name), NULL) as events
 		FROM users_validators_tags
 		LEFT JOIN users_subscriptions
-		ON 
-			users_validators_tags.user_id = users_subscriptions.user_id
-		AND 
-			ENCODE(users_validators_tags.validator_publickey::bytea, 'hex') = users_subscriptions.event_filter
+			ON users_validators_tags.user_id = users_subscriptions.user_id
+			AND ENCODE(users_validators_tags.validator_publickey::bytea, 'hex') = users_subscriptions.event_filter
 		LEFT JOIN validators
-		ON
-			users_validators_tags.validator_publickey = validators.pubkey
+			ON users_validators_tags.validator_publickey = validators.pubkey
 		WHERE users_validators_tags.user_id = $1
-		GROUP BY users_validators_tags.user_id, users_validators_tags.validator_publickey;
-	`, user.UserID)
+		GROUP BY users_validators_tags.user_id, users_validators_tags.validator_publickey, validators.validatorindex;
+		`, user.UserID)
 	if err != nil {
 		logger.Errorf("error retrieving subscriptions for users: %v validators: %v", user.UserID, err)
 		http.Error(w, "Internal server error", 503)
@@ -298,16 +333,18 @@ func UserNotificationsData(w http.ResponseWriter, r *http.Request) {
 
 	tableData := make([][]interface{}, 0, len(wl))
 	for _, entry := range wl {
+		index := template.HTML("-")
+		if entry.Index != nil {
+			index = utils.FormatValidator(*entry.Index)
+		}
 		tableData = append(tableData, []interface{}{
+			index,
 			utils.FormatPublicKey(entry.Publickey),
 			utils.FormatBalance(entry.Balance, currency),
 			entry.Events,
-			// utils.FormatBalance(item.Balance),
-			// item.Events[0],
 		})
 	}
 
-	// log.Println("COUNT", len(watchlist))
 	data := &types.DataTableResponse{
 		Draw:            draw,
 		RecordsTotal:    uint64(len(wl)),
@@ -383,6 +420,8 @@ func UserSubscriptionsData(w http.ResponseWriter, r *http.Request) {
 			} else {
 				pubkey = utils.FormatPublicKey(h)
 			}
+		} else if sub.EventName == types.TaxReportEventName {
+			pubkey = template.HTML(`<a href="/rewards">report</a>`)
 		}
 
 		tableData = append(tableData, []interface{}{
@@ -496,6 +535,23 @@ func UserDeletePost(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func UserUpdateFlagsPost(w http.ResponseWriter, r *http.Request) {
+	user, _, err := getUserSession(w, r)
+	if err != nil {
+		logger.Errorf("error retrieving session: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	shareStats := FormValueOrJSON(r, "shareStats")
+
+	logger.Errorf("shareStats: %v", shareStats)
+
+	err = db.SetUserMonitorSharingSetting(user.UserID, shareStats == "true")
+
+	http.Redirect(w, r, "/user/settings#app", http.StatusOK)
+}
+
 func UserUpdatePasswordPost(w http.ResponseWriter, r *http.Request) {
 	var GenericUpdatePasswordError = "Error: Something went wrong updating your password 😕. If this error persists please contact <a href=\"https://support.bitfly.at/support/home\">support</a>"
 
@@ -534,7 +590,7 @@ func UserUpdatePasswordPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !currentUser.Confirmed {
-		session.AddFlash("Error: Email has not been comfirmed, please click the link in the email we sent you or <a href='/resend'>resend link</a>!")
+		session.AddFlash("Error: Email has not been confirmed, please click the link in the email we sent you or <a href='/resend'>resend link</a>!")
 		session.Save(r, w)
 		http.Redirect(w, r, "/user/settings", http.StatusSeeOther)
 		return
@@ -645,9 +701,11 @@ func UserConfirmUpdateEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := r.URL.Query()
-	newEmail, err := url.QueryUnescape(q.Get("email"))
-	if err != nil {
-		utils.SetFlash(w, r, authSessionName, "Error: Could not update your email please try again.")
+
+	newEmail := q.Get("email")
+
+	if !utils.IsValidEmail(newEmail) {
+		utils.SetFlash(w, r, authSessionName, "Error: Could not update your email because the new email is invalid, please try again.")
 		http.Redirect(w, r, "/confirmation", http.StatusSeeOther)
 		return
 	}
@@ -740,7 +798,7 @@ Best regards,
 
 %[1]s
 `, utils.Config.Frontend.SiteDomain, emailConfirmationHash, url.QueryEscape(newEmail))
-	err = mail.SendMail(newEmail, subject, msg)
+	err = mail.SendMail(newEmail, subject, msg, []types.EmailAttachment{})
 	if err != nil {
 		return err
 	}
@@ -900,7 +958,7 @@ func UserDashboardWatchlistAdd(w http.ResponseWriter, r *http.Request) {
 
 	publicKeys := make([]string, 0)
 	db.DB.Select(&publicKeys, `
-	SELECT Encode(pubkey::bytea, 'hex') as pubkey
+	SELECT pubkeyhex as pubkey
 	FROM validators
 	WHERE validatorindex = ANY($1)
 	`, pq.Int64Array(indicesParsed))
@@ -918,72 +976,6 @@ func UserDashboardWatchlistAdd(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logger.Errorf("error could not add validators to watchlist: %v, %v", r.URL.String(), err)
 		ErrorOrJSONResponse(w, r, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	OKResponse(w, r)
-}
-
-// UserClientsAdd godoc
-// @Summary  associates an ethereum or ethereum 2 client with an user
-// @Tags User
-// @Produce  json
-// @Param clientName body []string true "Valid client names are: lighthouse, prysm, nimbus, teku, geth, openeth, nethermind, besu"
-// @Param clientVersion body string true "Client version (github release api: release id) or 0 for unknown or no change."
-// @Param notify body boolean true "Receive client update notifications"
-// @Success 200 {object} types.ApiResponse
-// @Failure 400 {object} types.ApiResponse
-// @Failure 500 {object} types.ApiResponse
-// @Security ApiKeyAuth
-// @Router /api/v1/user/clients [post]
-func UserClientsAdd(w http.ResponseWriter, r *http.Request) {
-	SetAutoContentType(w, r)
-	j := json.NewEncoder(w)
-
-	clientName := FormValueOrJSON(r, "clientName")
-	clientVersion := FormValueOrJSON(r, "clientVersion")
-	notifyEnabled := FormValueOrJSON(r, "notify") == "true"
-
-	clientVersionNumber, err := strconv.ParseInt(clientVersion, 10, 64)
-	if err != nil {
-		logger.Errorf("error invalid client version number: %v: %v, %v", clientVersion, r.URL.String(), err)
-		ErrorOrJSONResponse(w, r, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	user := getUser(w, r)
-
-	err2 := db.UserClientEntry(user.UserID, clientName, clientVersionNumber, notifyEnabled)
-	if err2 != nil {
-		logger.Errorf("error inserting or updating client entry %v, %v", r.URL.String(), err2)
-		sendErrorResponse(j, r.URL.String(), "error inserting or updating client entry")
-		return
-	}
-
-	OKResponse(w, r)
-}
-
-// UserClientsDelete godoc
-// @Summary  deletes an ethereum or ethereum 2 client from a user
-// @Tags User
-// @Produce  json
-// @Param clientName body []string true "Valid client names are: lighthouse, prysm, nimbus, teku, geth, openethereum, nethermind, besu"
-// @Success 200 {object} types.ApiResponse
-// @Failure 400 {object} types.ApiResponse
-// @Failure 500 {object} types.ApiResponse
-// @Security ApiKeyAuth
-// @Router /api/v1/user/clients [delete]
-func UserClientsDelete(w http.ResponseWriter, r *http.Request) {
-	SetAutoContentType(w, r)
-	j := json.NewEncoder(w)
-
-	clientName := FormValueOrJSON(r, "clientName")
-	user := getUser(w, r)
-
-	err2 := db.UserClientDelete(user.UserID, clientName)
-	if err2 != nil {
-		logger.Errorf("error deleting client entry %v, %v", r.URL.String(), err2)
-		sendErrorResponse(j, r.URL.String(), "error deleting client entry")
 		return
 	}
 
@@ -1171,4 +1163,43 @@ func UserNotificationsUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	OKResponse(w, r)
+}
+
+func MobileDeviceDeletePOST(w http.ResponseWriter, r *http.Request) {
+
+	w.Header().Set("Content-Type", "application/json")
+	j := json.NewEncoder(w)
+
+	claims := getAuthClaims(r)
+	var userDeviceID uint64
+	var userID uint64
+
+	if claims == nil {
+		customDeviceID := FormValueOrJSON(r, "id")
+		temp, err := strconv.ParseUint(customDeviceID, 10, 64)
+		if err != nil {
+			logger.Errorf("error parsing id %v | err: %v", customDeviceID, err)
+			sendErrorResponse(j, r.URL.String(), "could not parse id")
+			return
+		}
+		userDeviceID = temp
+		sessionUser := getUser(w, r)
+		if !sessionUser.Authenticated {
+			sendErrorResponse(j, r.URL.String(), "not authenticated")
+			return
+		}
+		userID = sessionUser.UserID
+	} else {
+		sendErrorResponse(j, r.URL.String(), "you can not delete the device you are currently signed in with")
+		return
+	}
+
+	err := db.MobileDeviceDelete(userID, userDeviceID)
+	if err != nil {
+		logger.Errorf("could not retrieve db results err: %v", err)
+		sendErrorResponse(j, r.URL.String(), "could not retrieve db results")
+		return
+	}
+
+	sendOKResponse(j, r.URL.String(), nil)
 }

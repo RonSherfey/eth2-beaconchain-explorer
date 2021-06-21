@@ -72,6 +72,7 @@ func GetTemplateFuncs() template.FuncMap {
 		"formatGraffiti":                          FormatGraffiti,
 		"formatHash":                              FormatHash,
 		"formatIncome":                            FormatIncome,
+		"formatMoney":                             FormatMoney,
 		"formatIncomeSql":                         FormatIncomeSql,
 		"formatSqlInt64":                          FormatSqlInt64,
 		"formatValidator":                         FormatValidator,
@@ -81,6 +82,7 @@ func GetTemplateFuncs() template.FuncMap {
 		"formatPercentage":                        FormatPercentage,
 		"formatPercentageWithPrecision":           FormatPercentageWithPrecision,
 		"formatPercentageWithGPrecision":          FormatPercentageWithGPrecision,
+		"formatPercentageColored":                 FormatPercentageColored,
 		"formatPublicKey":                         FormatPublicKey,
 		"formatSlashedValidator":                  FormatSlashedValidator,
 		"formatSlashedValidatorInt64":             FormatSlashedValidatorInt64,
@@ -97,6 +99,7 @@ func GetTemplateFuncs() template.FuncMap {
 		"add":                                     func(i, j int) int { return i + j },
 		"addI64":                                  func(i, j int64) int64 { return i + j },
 		"div":                                     func(i, j float64) float64 { return i / j },
+		"divInt":                                  func(i, j int) float64 { return float64(i) / float64(j) },
 		"gtf":                                     func(i, j float64) bool { return i > j },
 		"round": func(i float64, n int) float64 {
 			return math.Round(i*math.Pow10(n)) / math.Pow10(n)
@@ -106,7 +109,10 @@ func GetTemplateFuncs() template.FuncMap {
 			p := message.NewPrinter(language.English)
 			return p.Sprintf("%.0f\n", i)
 		},
-
+		"formatThousandsInt": func(i int) string {
+			p := message.NewPrinter(language.English)
+			return p.Sprintf("%d", i)
+		},
 		"derefString":      DerefString,
 		"trLang":           TrLang,
 		"firstCharToUpper": func(s string) string { return strings.Title(s) },
@@ -169,8 +175,13 @@ func EpochToTime(epoch uint64) time.Time {
 	return time.Unix(int64(Config.Chain.GenesisTimestamp+epoch*Config.Chain.SecondsPerSlot*Config.Chain.SlotsPerEpoch), 0)
 }
 
-// EpochToTime will return a time.Time for an epoch
-func DayToTime(day uint64) time.Time {
+// TimeToDay will return a days since genesis for an timestamp
+func TimeToDay(timestamp uint64) uint64 {
+	return uint64(time.Unix(int64(timestamp), 0).Sub(time.Unix(int64(Config.Chain.GenesisTimestamp), 0)).Hours() / 24)
+	// return time.Unix(int64(Config.Chain.GenesisTimestamp), 0).Add(time.Hour * time.Duration(24*int(day)))
+}
+
+func DayToTime(day int64) time.Time {
 	return time.Unix(int64(Config.Chain.GenesisTimestamp), 0).Add(time.Hour * time.Duration(24*int(day)))
 }
 
@@ -197,7 +208,8 @@ func ReadConfig(cfg *types.Config, path string) error {
 		return err
 	}
 
-	return readConfigEnv(cfg)
+	readConfigEnv(cfg)
+	return readConfigSecrets(cfg)
 }
 
 func readConfigFile(cfg *types.Config, path string) error {
@@ -217,6 +229,10 @@ func readConfigFile(cfg *types.Config, path string) error {
 
 func readConfigEnv(cfg *types.Config) error {
 	return envconfig.Process("", cfg)
+}
+
+func readConfigSecrets(cfg *types.Config) error {
+	return ProcessSecrets(cfg)
 }
 
 // MustParseHex will parse a string into hex
@@ -345,48 +361,67 @@ func SqlRowsToJSON(rows *sql.Rows) ([]interface{}, error) {
 
 			//log.Println(v.Name(), v.DatabaseTypeName())
 			if z, ok := (scanArgs[i]).(*sql.NullBool); ok {
-				masterData[v.Name()] = z.Bool
+				if z.Valid {
+					masterData[v.Name()] = z.Bool
+				} else {
+					masterData[v.Name()] = nil
+				}
 				continue
 			}
 
 			if z, ok := (scanArgs[i]).(*sql.NullString); ok {
-				if v.DatabaseTypeName() == "BYTEA" {
-					if len(z.String) > 0 {
-						masterData[v.Name()] = "0x" + hex.EncodeToString([]byte(z.String))
+				if z.Valid {
+					if v.DatabaseTypeName() == "BYTEA" {
+						if len(z.String) > 0 {
+							masterData[v.Name()] = "0x" + hex.EncodeToString([]byte(z.String))
+						} else {
+							masterData[v.Name()] = nil
+						}
+					} else if v.DatabaseTypeName() == "NUMERIC" {
+						nbr, _ := new(big.Int).SetString(z.String, 10)
+						masterData[v.Name()] = nbr
 					} else {
-						masterData[v.Name()] = nil
+						masterData[v.Name()] = z.String
 					}
-				} else if v.DatabaseTypeName() == "NUMERIC" {
-					nbr, _ := new(big.Int).SetString(z.String, 10)
-					masterData[v.Name()] = nbr
 				} else {
-					masterData[v.Name()] = z.String
+					masterData[v.Name()] = nil
 				}
 				continue
 			}
 
 			if z, ok := (scanArgs[i]).(*sql.NullInt64); ok {
-				masterData[v.Name()] = z.Int64
-				continue
-			}
-
-			if z, ok := (scanArgs[i]).(*sql.NullFloat64); ok {
-				masterData[v.Name()] = z.Float64
-				continue
-			}
-
-			if z, ok := (scanArgs[i]).(*sql.NullFloat64); ok {
-				masterData[v.Name()] = z.Float64
+				if z.Valid {
+					masterData[v.Name()] = z.Int64
+				} else {
+					masterData[v.Name()] = nil
+				}
 				continue
 			}
 
 			if z, ok := (scanArgs[i]).(*sql.NullInt32); ok {
-				masterData[v.Name()] = z.Int32
+				if z.Valid {
+					masterData[v.Name()] = z.Int32
+				} else {
+					masterData[v.Name()] = nil
+				}
+				continue
+			}
+
+			if z, ok := (scanArgs[i]).(*sql.NullFloat64); ok {
+				if z.Valid {
+					masterData[v.Name()] = z.Float64
+				} else {
+					masterData[v.Name()] = nil
+				}
 				continue
 			}
 
 			if z, ok := (scanArgs[i]).(*sql.NullTime); ok {
-				masterData[v.Name()] = z.Time.Unix()
+				if z.Valid {
+					masterData[v.Name()] = z.Time.Unix()
+				} else {
+					masterData[v.Name()] = nil
+				}
 				continue
 			}
 
@@ -418,6 +453,7 @@ func ExchangeRateForCurrency(currency string) float64 {
 	return price.GetEthPrice(currency)
 }
 
+// Glob walks through a directory and returns files with a given extention
 func Glob(dir string, ext string) ([]string, error) {
 	files := []string{}
 	err := filepath.Walk(dir, func(path string, f os.FileInfo, err error) error {

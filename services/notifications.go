@@ -4,10 +4,13 @@ import (
 	"eth2-exporter/db"
 	ethclients "eth2-exporter/ethClients"
 	"eth2-exporter/mail"
+	"eth2-exporter/metrics"
 	"eth2-exporter/notify"
 	"eth2-exporter/types"
 	"eth2-exporter/utils"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -28,7 +31,8 @@ func notificationsSender() {
 		notifications := collectNotifications()
 		sendNotifications(notifications)
 		logger.WithField("notifications", len(notifications)).WithField("duration", time.Since(start)).Info("notifications completed")
-		time.Sleep(time.Second * 60)
+		metrics.TaskDuration.WithLabelValues("service_notifications").Observe(time.Since(start).Seconds())
+		time.Sleep(time.Second * 120)
 	}
 }
 
@@ -66,6 +70,42 @@ func collectNotifications() map[uint64]map[types.EventName][]types.Notification 
 	err = collectEthClientNotifications(notificationsByUserID, types.EthClientUpdateEventName)
 	if err != nil {
 		logger.Errorf("error collecting Eth client notifications: %v", err)
+	}
+
+	// Monitoring (premium): machine offline
+	err = collectMonitoringMachineOffline(notificationsByUserID)
+	if err != nil {
+		logger.Errorf("error collecting Eth client notifications: %v", err)
+	}
+
+	// Monitoring (premium): disk full warnings
+	err = collectMonitoringMachineDiskAlmostFull(notificationsByUserID)
+	if err != nil {
+		logger.Errorf("error collecting Eth client notifications: %v", err)
+	}
+
+	// Monitoring (premium): cpu load
+	err = collectMonitoringMachineCPULoad(notificationsByUserID)
+	if err != nil {
+		logger.Errorf("error collecting Eth client notifications: %v", err)
+	}
+
+	// Monitoring (premium): ETH2 fallback in use
+	err = collectMonitoringMachineETH2FallbackActive(notificationsByUserID)
+	if err != nil {
+		logger.Errorf("error collecting Eth client notifications: %v", err)
+	}
+
+	// Monitoring (premium): ETH1 fallback in use
+	err = collectMonitoringMachineETH1FallbackActive(notificationsByUserID)
+	if err != nil {
+		logger.Errorf("error collecting Eth client notifications: %v", err)
+	}
+
+	//Tax Report
+	err = collectTaxReportNotificationNotifications(notificationsByUserID, types.TaxReportEventName)
+	if err != nil {
+		logger.Errorf("error collecting tax report notifications: %v", err)
 	}
 
 	return notificationsByUserID
@@ -216,6 +256,7 @@ func sendEmailNotifications(notificationsByUserID map[uint64]map[types.EventName
 			sentSubsByEpoch := map[uint64][]uint64{}
 			subject := fmt.Sprintf("%s: Notification", utils.Config.Frontend.SiteDomain)
 			msg := ""
+			attachments := []types.EmailAttachment{}
 			for event, ns := range userNotifications {
 				if len(msg) > 0 {
 					msg += "\n"
@@ -229,6 +270,10 @@ func sendEmailNotifications(notificationsByUserID map[uint64]map[types.EventName
 					} else {
 						sentSubsByEpoch[e] = append(sentSubsByEpoch[e], n.GetSubscriptionID())
 					}
+					if att := n.GetEmailAttachment(); att != nil {
+						attachments = append(attachments, *att)
+					}
+
 				}
 				if event == "validator_balance_decreased" {
 					msg += "\nYou will not receive any further balance decrease mails for these validators until the balance of a validator is increasing again.\n"
@@ -236,7 +281,7 @@ func sendEmailNotifications(notificationsByUserID map[uint64]map[types.EventName
 			}
 			msg += fmt.Sprintf("\nBest regards\n\n%s", utils.Config.Frontend.SiteDomain)
 
-			err := mail.SendMailRateLimited(userEmail, subject, msg)
+			err := mail.SendMailRateLimited(userEmail, subject, msg, attachments)
 			if err != nil {
 				logger.Errorf("error sending notification-email: %v", err)
 				return
@@ -261,6 +306,10 @@ type validatorBalanceDecreasedNotification struct {
 	EndBalance         uint64
 	SubscriptionID     uint64
 	EventFilter        string
+}
+
+func (n *validatorBalanceDecreasedNotification) GetEmailAttachment() *types.EmailAttachment {
+	return nil
 }
 
 func (n *validatorBalanceDecreasedNotification) GetSubscriptionID() uint64 {
@@ -295,7 +344,7 @@ func (n *validatorBalanceDecreasedNotification) GetEventFilter() string {
 }
 
 func getUrlPart(validatorIndex uint64) string {
-	return fmt.Sprintf(` For more information visit: https://%[2]s/validator/%[1]v.`, validatorIndex, utils.Config.Frontend.SiteDomain)
+	return fmt.Sprintf(` For more information visit: https://%[2]s/validator/%[1]v`, validatorIndex, utils.Config.Frontend.SiteDomain)
 }
 
 // collectValidatorBalanceDecreasedNotifications finds all validators whose balance decreased for 3 consecutive epochs
@@ -430,6 +479,10 @@ type validatorProposalNotification struct {
 	EventFilter        string
 }
 
+func (n *validatorProposalNotification) GetEmailAttachment() *types.EmailAttachment {
+	return nil
+}
+
 func (n *validatorProposalNotification) GetSubscriptionID() uint64 {
 	return n.SubscriptionID
 }
@@ -549,6 +602,10 @@ type validatorAttestationNotification struct {
 	EventFilter        string
 }
 
+func (n *validatorAttestationNotification) GetEmailAttachment() *types.EmailAttachment {
+	return nil
+}
+
 func (n *validatorAttestationNotification) GetSubscriptionID() uint64 {
 	return n.SubscriptionID
 }
@@ -598,6 +655,10 @@ type validatorGotSlashedNotification struct {
 	Slasher        uint64
 	Reason         string
 	EventFilter    string
+}
+
+func (n *validatorGotSlashedNotification) GetEmailAttachment() *types.EmailAttachment {
+	return nil
 }
 
 func (n *validatorGotSlashedNotification) GetSubscriptionID() uint64 {
@@ -713,6 +774,10 @@ type ethClientNotification struct {
 	EventFilter    string
 }
 
+func (n *ethClientNotification) GetEmailAttachment() *types.EmailAttachment {
+	return nil
+}
+
 func (n *ethClientNotification) GetSubscriptionID() uint64 {
 	return n.SubscriptionID
 }
@@ -728,7 +793,27 @@ func (n *ethClientNotification) GetEventName() types.EventName {
 func (n *ethClientNotification) GetInfo(includeUrl bool) string {
 	generalPart := fmt.Sprintf(`A new version for %s is available.`, n.EthClient)
 	if includeUrl {
-		return generalPart + " https://beaconcha.in/ethClients"
+		url := ""
+		switch n.EthClient {
+		case "Geth":
+			url = "https://github.com/ethereum/go-ethereum/releases"
+		case "Nethermind":
+			url = "https://github.com/NethermindEth/nethermind/releases"
+		case "OpenEthereum":
+			url = "https://github.com/openethereum/openethereum/releases"
+		case "Teku":
+			url = "https://github.com/ConsenSys/teku/releases"
+		case "Prysm":
+			url = "https://github.com/prysmaticlabs/prysm/releases"
+		case "Nimbus":
+			url = "https://github.com/status-im/nimbus-eth2/releases"
+		case "Lighthouse":
+			url = "https://github.com/sigp/lighthouse/releases"
+		default:
+			url = "https://beaconcha.in/ethClients"
+		}
+
+		return generalPart + " " + url
 	}
 	return generalPart
 }
@@ -786,5 +871,305 @@ func collectEthClientNotifications(notificationsByUserID map[uint64]map[types.Ev
 			notificationsByUserID[r.UserID][n.GetEventName()] = append(notificationsByUserID[r.UserID][n.GetEventName()], n)
 		}
 	}
+	return nil
+}
+
+func collectMonitoringMachineOffline(notificationsByUserID map[uint64]map[types.EventName][]types.Notification) error {
+	return collectMonitoringMachine(notificationsByUserID, types.MonitoringMachineOfflineEventName,
+		`SELECT 
+			us.id, 
+			us.user_id
+		FROM users_subscriptions us
+		INNER JOIN stats_meta v ON us.user_id = v.user_id
+		WHERE us.event_name = $1 AND us.created_epoch <= $2 
+		AND (us.last_sent_epoch < ($2 - 120) OR us.last_sent_epoch IS NULL)
+		AND v.ts < now() - interval '3 minutes' AND v.ts > now() - interval '6 hours'
+		AND machine 
+		NOT IN 
+		(SELECT event_filter FROM users_notifications as un WHERE un.event_name=$1 AND un.user_id = us.user_id AND un.sent_ts > NOW() - INTERVAL '6 hours')
+	`)
+}
+
+func collectMonitoringMachineDiskAlmostFull(notificationsByUserID map[uint64]map[types.EventName][]types.Notification) error {
+	return collectMonitoringMachine(notificationsByUserID, types.MonitoringMachineDiskAlmostFullEventName,
+		`SELECT 
+			us.id, 
+			us.user_id 
+		FROM users_subscriptions us
+		INNER JOIN stats_meta v ON us.user_id = v.user_id
+		INNER JOIN stats_system sy ON v.id = sy.meta_id
+		WHERE us.event_name = $1 AND us.created_epoch <= $2 
+		AND (us.last_sent_epoch < ($2 - 120) OR us.last_sent_epoch IS NULL)
+		AND sy.disk_node_bytes_free / sy.disk_node_bytes_total < 0.05
+		AND machine 
+		NOT IN 
+		(SELECT event_filter FROM users_notifications as un WHERE un.event_name=$1 AND un.user_id = us.user_id AND un.sent_ts > NOW() - INTERVAL '6 hours')
+	`)
+}
+
+func collectMonitoringMachineCPULoad(notificationsByUserID map[uint64]map[types.EventName][]types.Notification) error {
+	return collectMonitoringMachine(notificationsByUserID, types.MonitoringMachineCpuLoadEventName,
+		`SELECT 
+			us.id, 
+			us.user_id 
+		FROM users_subscriptions us
+		INNER JOIN stats_meta v ON us.user_id = v.user_id
+		INNER JOIN stats_system sy ON v.id = sy.meta_id
+		WHERE us.event_name = $1 AND us.created_epoch <= $2 
+		AND (us.last_sent_epoch < ($2 - 120) OR us.last_sent_epoch IS NULL)
+		AND sy.cpu_node_idle_seconds_total / sy.cpu_node_system_seconds_total < 0.10
+		AND machine 
+		NOT IN 
+		(SELECT event_filter FROM users_notifications as un WHERE un.event_name=$1 AND un.user_id = us.user_id AND un.sent_ts > NOW() - INTERVAL '6 hours')
+	`)
+}
+
+func collectMonitoringMachineETH2FallbackActive(notificationsByUserID map[uint64]map[types.EventName][]types.Notification) error {
+	return collectMonitoringMachine(notificationsByUserID, types.MonitoringMachineSwitchedToETH2FallbackEventName,
+		`SELECT 
+			us.id, 
+			us.user_id 
+		FROM users_subscriptions us
+		INNER JOIN stats_meta v ON us.user_id = v.user_id
+		INNER JOIN stats_process sy ON v.id = sy.meta_id
+		WHERE us.event_name = $1 AND us.created_epoch <= $2 
+		AND (us.last_sent_epoch < ($2 - 120) OR us.last_sent_epoch IS NULL)
+		AND sync_eth2_fallback_connected = true AND sync_eth2_fallback_configured = true
+		AND machine 
+		NOT IN 
+		(SELECT event_filter FROM users_notifications as un WHERE un.event_name=$1 AND un.user_id = us.user_id AND un.sent_ts > NOW() - INTERVAL '6 hours')
+	`)
+}
+
+func collectMonitoringMachineETH1FallbackActive(notificationsByUserID map[uint64]map[types.EventName][]types.Notification) error {
+	return collectMonitoringMachine(notificationsByUserID, types.MonitoringMachineSwitchedToETH1FallbackEventName,
+		`SELECT 
+			us.id, 
+			us.user_id 
+		FROM users_subscriptions us
+		INNER JOIN stats_meta v ON us.user_id = v.user_id
+		INNER JOIN stats_process sy ON v.id = sy.meta_id
+		INNER JOIN stats_add_beaconnode bn ON sy.id = bn.general_id
+		WHERE us.event_name = $1 AND us.created_epoch <= $2 
+		AND (us.last_sent_epoch < ($2 - 120) OR us.last_sent_epoch IS NULL)
+		AND sync_eth1_fallback_connected = true AND sync_eth1_fallback_configured = true
+		AND machine 
+		NOT IN 
+		(SELECT event_filter FROM users_notifications as un WHERE un.event_name=$1 AND un.user_id = us.user_id AND un.sent_ts > NOW() - INTERVAL '6 hours')
+	`)
+}
+
+func collectMonitoringMachine(notificationsByUserID map[uint64]map[types.EventName][]types.Notification, eventName types.EventName, query string) error {
+	latestEpoch := LatestEpoch()
+	if latestEpoch == 0 {
+		return nil
+	}
+
+	var dbResult []struct {
+		SubscriptionID uint64 `db:"id"`
+		UserID         uint64 `db:"user_id"`
+		MachineName    string `db:"machine"`
+	}
+
+	err := db.FrontendDB.Select(&dbResult, query, eventName, latestEpoch)
+	if err != nil {
+		return err
+	}
+
+	for _, r := range dbResult {
+
+		n := &monitorMachineNotification{
+			SubscriptionID: r.SubscriptionID,
+			MachineName:    r.MachineName,
+			UserID:         r.UserID,
+			EventName:      eventName,
+			Epoch:          latestEpoch,
+		}
+
+		if _, exists := notificationsByUserID[r.UserID]; !exists {
+			notificationsByUserID[r.UserID] = map[types.EventName][]types.Notification{}
+		}
+		if _, exists := notificationsByUserID[r.UserID][n.GetEventName()]; !exists {
+			notificationsByUserID[r.UserID][n.GetEventName()] = []types.Notification{}
+		}
+		notificationsByUserID[r.UserID][n.GetEventName()] = append(notificationsByUserID[r.UserID][n.GetEventName()], n)
+	}
+
+	return nil
+}
+
+type monitorMachineNotification struct {
+	SubscriptionID uint64
+	MachineName    string
+	UserID         uint64
+	Epoch          uint64
+	EventName      types.EventName
+}
+
+func (n *monitorMachineNotification) GetEmailAttachment() *types.EmailAttachment {
+	return nil
+}
+
+func (n *monitorMachineNotification) GetSubscriptionID() uint64 {
+	return n.SubscriptionID
+}
+
+func (n *monitorMachineNotification) GetEpoch() uint64 {
+	return n.Epoch
+}
+
+func (n *monitorMachineNotification) GetEventName() types.EventName {
+	return n.EventName
+}
+
+func (n *monitorMachineNotification) GetInfo(includeUrl bool) string {
+	switch n.EventName {
+	case types.MonitoringMachineDiskAlmostFullEventName:
+		return fmt.Sprintf(`Your staking machine "%v" has less than 5%% free disk space.`, n.MachineName)
+	case types.MonitoringMachineOfflineEventName:
+		return fmt.Sprintf(`Your staking machine "%v" has not been seen for a couple minutes now. Is it offline?`, n.MachineName)
+	case types.MonitoringMachineCpuLoadEventName:
+		return fmt.Sprintf(`Your staking machine "%v" has a very high CPU usage`, n.MachineName)
+	case types.MonitoringMachineSwitchedToETH1FallbackEventName:
+		return fmt.Sprintf(`Your staking machine "%v" has switched to your configured ETH1 fallback`, n.MachineName)
+	case types.MonitoringMachineSwitchedToETH2FallbackEventName:
+		return fmt.Sprintf(`Your staking machine "%v" has switched to your configured ETH2 fallback`, n.MachineName)
+	}
+	return ""
+}
+
+func (n *monitorMachineNotification) GetTitle() string {
+	switch n.EventName {
+	case types.MonitoringMachineDiskAlmostFullEventName:
+		return "Storage Warning"
+	case types.MonitoringMachineOfflineEventName:
+		return "Staking Machine Offline"
+	case types.MonitoringMachineSwitchedToETH1FallbackEventName:
+		return "ETH1 Fallback Active"
+	case types.MonitoringMachineSwitchedToETH2FallbackEventName:
+		return "ETH2 Fallback Active"
+	}
+	return ""
+}
+
+func (n *monitorMachineNotification) GetEventFilter() string {
+	return n.MachineName
+}
+
+type taxReportNotification struct {
+	SubscriptionID uint64
+	UserID         uint64
+	Epoch          uint64
+	EventFilter    string
+}
+
+func (n *taxReportNotification) GetEmailAttachment() *types.EmailAttachment {
+	tNow := time.Now()
+	firstDay := time.Date(tNow.Year(), tNow.Month(), 1, 0, 0, 0, 0, time.UTC)
+	lastDay := firstDay.AddDate(0, 1, 0).Add(-time.Nanosecond)
+
+	q, err := url.ParseQuery(n.EventFilter)
+
+	if err != nil {
+		logger.Warn("Failed to parse rewards report eventfilter")
+		return nil
+	}
+
+	currency := q.Get("currency")
+
+	validators := []uint64{}
+	valSlice := strings.Split(q.Get("validators"), ",")
+	if len(valSlice) > 0 {
+		for _, val := range valSlice {
+			v, err := strconv.ParseUint(val, 10, 64)
+			if err != nil {
+				continue
+			}
+			validators = append(validators, v)
+		}
+	} else {
+		logger.Warn("Validators Not found in rewards report eventfilter")
+		return nil
+	}
+
+	pdf := GetPdfReport(validators, currency, uint64(firstDay.Unix()), uint64(lastDay.Unix()))
+
+	return &types.EmailAttachment{Attachment: pdf, Name: "beaconcha_in-rewards-history.pdf"}
+}
+
+func (n *taxReportNotification) GetSubscriptionID() uint64 {
+	return n.SubscriptionID
+}
+
+func (n *taxReportNotification) GetEpoch() uint64 {
+	return n.Epoch
+}
+
+func (n *taxReportNotification) GetEventName() types.EventName {
+	return types.TaxReportEventName
+}
+
+func (n *taxReportNotification) GetInfo(includeUrl bool) string {
+	// tNow := time.Now()
+	// firstDay := time.Date(tNow.Year(), tNow.Month(), 1, 0, 0, 0, 0, time.UTC)
+	// lastDay := firstDay.AddDate(0, 1, 0).Add(-time.Nanosecond)
+	// dateRange := fmt.Sprintf("days=%d-%d", firstDay.Unix(), lastDay.Unix())
+	generalPart := fmt.Sprint(`Monthly report is ready to download`)
+	// if includeUrl {
+	// 	url := fmt.Sprintf("https://%s/rewards/hist/download?%s", utils.Config.Frontend.SiteDomain, n.EventFilter)
+	// 	url = strings.Replace(url, "days=30", dateRange, -1)
+	// 	return generalPart + " " + url
+	// }
+	return generalPart
+}
+
+func (n *taxReportNotification) GetTitle() string {
+	return fmt.Sprint("New report ready")
+}
+
+func (n *taxReportNotification) GetEventFilter() string {
+	return n.EventFilter
+}
+
+func collectTaxReportNotificationNotifications(notificationsByUserID map[uint64]map[types.EventName][]types.Notification, eventName types.EventName) error {
+	tNow := time.Now()
+	firstDay := time.Date(tNow.Year(), tNow.Month(), 1, 0, 0, 0, 0, time.UTC)
+	lastDay := firstDay.AddDate(0, 1, 0).Add(-time.Nanosecond)
+	if tNow.Year() == lastDay.Year() && tNow.Month() == lastDay.Month() && tNow.Day() == lastDay.Day() { // Send the reports at the end of the month
+		var dbResult []struct {
+			SubscriptionID uint64 `db:"id"`
+			UserID         uint64 `db:"user_id"`
+			Epoch          uint64 `db:"created_epoch"`
+			EventFilter    string `db:"event_filter"`
+		}
+
+		err := db.DB.Select(&dbResult, `
+			SELECT us.id, us.user_id, us.created_epoch, us.event_filter                 
+			FROM users_subscriptions AS us
+			WHERE us.event_name=$1 AND (us.last_sent_ts <= NOW() - INTERVAL '2 DAY' OR us.last_sent_ts IS NULL);
+			`,
+			eventName)
+
+		if err != nil {
+			return err
+		}
+
+		for _, r := range dbResult {
+			n := &taxReportNotification{
+				SubscriptionID: r.SubscriptionID,
+				UserID:         r.UserID,
+				Epoch:          r.Epoch,
+				EventFilter:    r.EventFilter,
+			}
+			if _, exists := notificationsByUserID[r.UserID]; !exists {
+				notificationsByUserID[r.UserID] = map[types.EventName][]types.Notification{}
+			}
+			if _, exists := notificationsByUserID[r.UserID][n.GetEventName()]; !exists {
+				notificationsByUserID[r.UserID][n.GetEventName()] = []types.Notification{}
+			}
+			notificationsByUserID[r.UserID][n.GetEventName()] = append(notificationsByUserID[r.UserID][n.GetEventName()], n)
+		}
+	}
+
 	return nil
 }
