@@ -1,3 +1,5 @@
+create extension pg_trgm; /* trigram extension for faster text-search */
+
 /*
 This table is used to store the current state (latest exported epoch) of all validators
 It also acts as a lookup-table to store the index-pubkey association
@@ -181,10 +183,12 @@ create table validator_stats_status
 drop table if exists validator_attestation_streaks;
 create table validator_attestation_streaks
 (
-    validatorindex int not null,
-    status         int not null,
-    start          int not null,
-    length         int not null,
+    validatorindex int     not null,
+    status         int     not null,
+    start          int     not null,
+    length         int     not null,
+    longest        boolean not null,
+    current        boolean not null,
     primary key (validatorindex, status, start)
 );
 create index idx_validator_attestation_streaks_validatorindex on validator_attestation_streaks (validatorindex);
@@ -263,6 +267,7 @@ create table blocks
 );
 create index idx_blocks_proposer on blocks (proposer);
 create index idx_blocks_epoch on blocks (epoch);
+create index idx_blocks_graffiti_text on blocks using gin (graffiti_text gin_trgm_ops);
 
 drop table if exists blocks_proposerslashings;
 create table blocks_proposerslashings
@@ -507,6 +512,7 @@ create table users_subscriptions
     user_id         int                         not null,
     event_name      character varying(100)      not null,
     event_filter    text                        not null default '',
+    event_threshold real                        default 0,
     last_sent_ts    timestamp without time zone,
     last_sent_epoch int,
     created_ts      timestamp without time zone not null,
@@ -533,6 +539,14 @@ create table users_validators_tags
     validator_publickey bytea                  not null,
     tag                 character varying(100) not null,
     primary key (user_id, validator_publickey, tag)
+);
+
+drop table if exists validator_tags;
+create table validator_tags
+(
+    publickey bytea                  not null,
+    tag       character varying(100) not null,
+    primary key (publickey, tag)
 );
 
 drop table if exists mails_sent;
@@ -569,12 +583,14 @@ CREATE TABLE stats_meta (
 	process 			character varying(20) 		not null,
 	machine 		 	character varying(50),
     created_trunc       timestamp   not null,
+    exporter_version          integer,
 	
 	user_id 		 	bigint	 	 		not null,
     foreign key(user_id) references users(id),
     UNIQUE (user_id, created_trunc, process, machine)
 );
-
+create index idx_stats_created_trunc on stats_meta (created_trunc);
+create index idx_stats_process on stats_meta (process);
 create index idx_stats_machine on stats_meta (machine);
 create index idx_stats_user on stats_meta (user_id);
 
@@ -664,6 +680,8 @@ CREATE TABLE stats_system (
 	foreign key(meta_id) references stats_meta(id)
 );
 
+create index idx_stats_system_meta_id on stats_system (meta_id);
+
 drop table if exists stake_pools_stats;
 create table stake_pools_stats
 (
@@ -707,3 +725,18 @@ CREATE TABLE stats_sharing (
 	user_id 		 	bigint	 	 		not null,
     foreign key(user_id) references users(id)
 );
+
+create function try_cast_numeric(p_in text, p_default numeric default null)
+   returns numeric
+as
+$$
+begin
+  begin
+    return $1::numeric;
+  exception 
+    when others then
+       return p_default;
+  end;
+end;
+$$
+language plpgsql;

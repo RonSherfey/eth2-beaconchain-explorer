@@ -189,6 +189,29 @@ type IndexPageEpochHistory struct {
 	Finalized       bool   `db:"finalized"`
 }
 
+// IndexPageDataBlocks is a struct to hold detail data for the main web page
+type BlocksPageDataBlocks struct {
+	TotalCount         uint64        `db:"total_count"`
+	Epoch              uint64        `json:"epoch"`
+	Slot               uint64        `json:"slot"`
+	Ts                 time.Time     `json:"ts"`
+	Proposer           uint64        `db:"proposer" json:"proposer"`
+	ProposerFormatted  template.HTML `json:"proposer_formatted"`
+	BlockRoot          []byte        `db:"blockroot" json:"block_root"`
+	BlockRootFormatted string        `json:"block_root_formatted"`
+	ParentRoot         []byte        `db:"parentroot" json:"parent_root"`
+	Attestations       uint64        `db:"attestationscount" json:"attestations"`
+	Deposits           uint64        `db:"depositscount" json:"deposits"`
+	Exits              uint64        `db:"voluntaryexitscount" json:"exits"`
+	Proposerslashings  uint64        `db:"proposerslashingscount" json:"proposerslashings"`
+	Attesterslashings  uint64        `db:"attesterslashingscount" json:"attesterslashings"`
+	Status             uint64        `db:"status" json:"status"`
+	StatusFormatted    template.HTML `json:"status_formatted"`
+	Votes              uint64        `db:"votes" json:"votes"`
+	Graffiti           []byte        `db:"graffiti"`
+	ProposerName       string        `db:"name"`
+}
+
 // ValidatorsPageData is a struct to hold data about the validators page
 type ValidatorsPageData struct {
 	TotalCount           uint64
@@ -245,12 +268,13 @@ type ValidatorPageData struct {
 	SlashedBy                           uint64
 	SlashedAt                           uint64
 	SlashedFor                          string
-	ActivationEligibilityEpoch          uint64  `db:"activationeligibilityepoch"`
-	ActivationEpoch                     uint64  `db:"activationepoch"`
-	ExitEpoch                           uint64  `db:"exitepoch"`
-	Index                               uint64  `db:"index"`
-	LastAttestationSlot                 *uint64 `db:"lastattestationslot"`
-	Name                                string  `db:"name"`
+	ActivationEligibilityEpoch          uint64         `db:"activationeligibilityepoch"`
+	ActivationEpoch                     uint64         `db:"activationepoch"`
+	ExitEpoch                           uint64         `db:"exitepoch"`
+	Index                               uint64         `db:"index"`
+	LastAttestationSlot                 *uint64        `db:"lastattestationslot"`
+	Name                                string         `db:"name"`
+	Tags                                pq.StringArray `db:"tags"`
 	WithdrawableTs                      time.Time
 	ActivationEligibilityTs             time.Time
 	ActivationTs                        time.Time
@@ -961,27 +985,6 @@ type StakeWithUsPageData struct {
 	FlashMessage string
 	RecaptchaKey string
 }
-
-type EthClients struct {
-	ClientReleaseVersion string
-	ClientReleaseDate    string
-	NetworkShare         string
-}
-
-type EthClientServicesPageData struct {
-	LastUpdate   time.Time
-	Geth         EthClients
-	Nethermind   EthClients
-	OpenEthereum EthClients
-	Besu         EthClients
-	Teku         EthClients
-	Prysm        EthClients
-	Nimbus       EthClients
-	Lighthouse   EthClients
-	Banner       string
-	CsrfField    template.HTML
-}
-
 type RateLimitError struct {
 	TimeLeft time.Duration
 }
