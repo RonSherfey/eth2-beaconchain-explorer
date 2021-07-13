@@ -583,15 +583,13 @@ CREATE TABLE stats_meta (
 	process 			character varying(20) 		not null,
 	machine 		 	character varying(50),
     created_trunc       timestamp   not null,
-    exporter_version          integer,
+    exporter_version          string,
 	
 	user_id 		 	bigint	 	 		not null,
     foreign key(user_id) references users(id),
     UNIQUE (user_id, created_trunc, process, machine)
 );
 create index idx_stats_created_trunc on stats_meta (created_trunc);
-create index idx_stats_process on stats_meta (process);
-create index idx_stats_machine on stats_meta (machine);
 create index idx_stats_user on stats_meta (user_id);
 
 drop table if exists stats_process;
@@ -613,6 +611,7 @@ CREATE TABLE stats_process (
 	
 	foreign key(meta_id) references stats_meta(id)
 );
+create index idx_stats_process_metaid on stats_process (meta_id);
 
 drop table if exists stats_add_beaconnode;
 CREATE TABLE stats_add_beaconnode (
@@ -632,6 +631,7 @@ CREATE TABLE stats_add_beaconnode (
 	
 	foreign key(general_id) references stats_process(id)
 );
+create index idx_stats_beaconnode_generalid on stats_add_beaconnode (general_id);
 
 drop table if exists stats_add_validator;
 CREATE TABLE stats_add_validator (
@@ -643,6 +643,7 @@ CREATE TABLE stats_add_validator (
 	
 	foreign key(general_id) references stats_process(id)
 );
+create index idx_stats_beaconnode_validator on stats_add_validator (general_id);
 
 drop table if exists stats_system;
 CREATE TABLE stats_system (
@@ -725,18 +726,3 @@ CREATE TABLE stats_sharing (
 	user_id 		 	bigint	 	 		not null,
     foreign key(user_id) references users(id)
 );
-
-create function try_cast_numeric(p_in text, p_default numeric default null)
-   returns numeric
-as
-$$
-begin
-  begin
-    return $1::numeric;
-  exception 
-    when others then
-       return p_default;
-  end;
-end;
-$$
-language plpgsql;

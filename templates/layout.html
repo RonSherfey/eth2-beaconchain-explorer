@@ -108,42 +108,42 @@
                     case 'AUD':
                         document.getElementById('currentCurrencySymbol').textContent = 'A$'
                         document.getElementById('currentKFormattedPrice').textContent = {{.AudTruncPrice}}
-                        document.getElementById('currentCurencyPrice').textContent = {{.AudRoundPrice}}
+                        document.getElementById('currentCurencyPrice').textContent = {{formatAddCommas .AudRoundPrice}}
                         break
 	                case 'CAD':
                         document.getElementById('currentCurrencySymbol').textContent = 'C$'
                         document.getElementById('currentKFormattedPrice').textContent = {{.CadTruncPrice}}
-                        document.getElementById('currentCurencyPrice').textContent = {{.CadRoundPrice}}
+                        document.getElementById('currentCurencyPrice').textContent = {{formatAddCommas .CadRoundPrice}}
 		                break
 	                case 'CNY':
                         document.getElementById('currentCurrencySymbol').textContent = '¥'
                         document.getElementById('currentKFormattedPrice').textContent = {{.CnyTruncPrice}}
-                        document.getElementById('currentCurencyPrice').textContent = {{.CnyRoundPrice}}
+                        document.getElementById('currentCurencyPrice').textContent = {{formatAddCommas .CnyRoundPrice}}
 		                break
 	                case 'EUR':
                         document.getElementById('currentCurrencySymbol').textContent = '€'
                         document.getElementById('currentKFormattedPrice').textContent = {{.EurTruncPrice}}
-                        document.getElementById('currentCurencyPrice').textContent = {{.EurRoundPrice}}
+                        document.getElementById('currentCurencyPrice').textContent = {{formatAddCommas .EurRoundPrice}}
 		                break
 	                case 'GBP':
                         document.getElementById('currentCurrencySymbol').textContent = '£'
                         document.getElementById('currentKFormattedPrice').textContent = {{.GbpTruncPrice}}
-                        document.getElementById('currentCurencyPrice').textContent = {{.GbpRoundPrice}}
+                        document.getElementById('currentCurencyPrice').textContent = {{formatAddCommas .GbpRoundPrice}}
 		                break
 	                case 'JPY':
                         document.getElementById('currentCurrencySymbol').textContent = '¥'
                         document.getElementById('currentKFormattedPrice').textContent = {{.JpyTruncPrice}}
-                        document.getElementById('currentCurencyPrice').textContent = {{.JpyRoundPrice}}
+                        document.getElementById('currentCurencyPrice').textContent = {{formatAddCommas .JpyRoundPrice}}
 		                break
 	                case 'RUB':
                         document.getElementById('currentCurrencySymbol').textContent = '₽'
                         document.getElementById('currentKFormattedPrice').textContent = {{.RubTruncPrice}}
-                        document.getElementById('currentCurencyPrice').textContent = {{.RubRoundPrice}}
+                        document.getElementById('currentCurencyPrice').textContent = {{formatAddCommas .RubRoundPrice}}
 		                break
                     default:
                         document.getElementById('currentCurrencySymbol').textContent = '$'
                         document.getElementById('currentKFormattedPrice').textContent = {{.UsdTruncPrice}}
-                        document.getElementById('currentCurencyPrice').textContent = {{.UsdRoundPrice}}
+                        document.getElementById('currentCurencyPrice').textContent = {{formatAddCommas .UsdRoundPrice}}
 		                break
                 }
             })
@@ -174,7 +174,7 @@
                         <span class="item-text">Ep<span class="d-none d-md-inline">och</span>:</span>
                     </div>
                     <div class="info-item-body">
-                        <a id="banner-epoch-data" href="/epoch/{{.CurrentEpoch}}">{{.CurrentEpoch}}</a>
+                        <a id="banner-epoch-data" href="/epoch/{{.CurrentEpoch}}">{{formatAddCommas .CurrentEpoch}}</a>
                     </div>
                 </div>
 
@@ -188,7 +188,7 @@
                             <span class="item-text">Slot:</span>
                         </div>
                         <div class="info-item-body">
-                            <a id="banner-slot-data" href="/block/{{.CurrentSlot}}">{{.CurrentSlot}}</a>
+                            <a id="banner-slot-data" href="/block/{{.CurrentSlot}}">{{formatAddCommas .CurrentSlot}}</a>
                         </div>
                     </div>
                 </div>
@@ -757,9 +757,15 @@
                     <div class="col">
                         <span>By using our site you agree to our <a href="/legal/privacy.pdf">use of cookies</a> to deliver a better user experience.</span>
                     </div>
-                    <div class="col-3 d-flex justify-content-center align-items-center">
-                        <button class="btn btn-primary btn" style="margin-left: 1%" onclick="acceptCookieBanner()">Got it</button>
-                    <div>
+                    
+                </div>
+                <div class="row">
+                    
+                    <div class="col d-flex justify-content-end align-items-end">
+                        <button class="btn btn-secondary btn" style="margin-left: 1%" onclick="acceptOnlyNecessaryCookies()">Only Necesarry</button>
+                        <button class="btn btn-primary btn" style="margin-left: 1%" onclick="acceptCookieBanner()">Accept All Cookies</button>
+                        <div>
+   
                 </div>
             </div>
         </div>
@@ -796,7 +802,7 @@
                 <div class="col-md-4 mb-2">
                     <h5>Links</h5>
                     <div class="d-flex flex-column">
-                        <a class="my-1" href="https://twitter.com/etherchain_org"><i class="fab fa-twitter mr-2"></i>Bitfly</a>
+                        <a class="my-1" href="https://twitter.com/beaconcha_in"><i class="fab fa-twitter mr-2"></i>Beaconcha.in</a>
                         <a class="my-1" href="https://github.com/gobitfly/eth2-beaconchain-explorer"><i class="fab fa-github mr-2"></i>Github</a>
                         <a class="my-1" href="https://github.com/gobitfly/eth2-beaconchain-explorer-app"><i class="fab fa-github mr-2"></i>Github Mobile App</a>
 
@@ -902,6 +908,10 @@
                 document.cookie = "cookie=accepted;expires=Fri, 31 Dec 9999 23:59:59 GMT;path=/"
                 hideCookieBanner()
         }
+        function acceptOnlyNecessaryCookies() {
+                document.cookie = "cookie=accepted-necessary;expires=Fri, 31 Dec 9999 23:59:59 GMT;path=/"
+                hideCookieBanner()
+        }
         
         if (document.cookie.indexOf("cookie=accepted")!=-1){
             hideCookieBanner()
@@ -917,8 +927,19 @@
     <script src="/js/instant.min.js" type="module"></script>
     {{ if ne .Meta.GATag ""}}
         <!-- Global site tag (gtag.js) - Google Analytics -->
-        <script async src="https://www.googletagmanager.com/gtag/js?id={{.Meta.GATag}}"></script>
+        
         <script>
+            if (document.cookie.indexOf("cookie=accepted-necessary") == -1){
+                let src = 'https://www.googletagmanager.com/gtag/js?id={{.Meta.GATag}}';
+                let a = document.createElement('script');
+                a.src = src;
+                document.body.appendChild(a);
+            } 
+        </script>
+
+
+        <script>
+
             window.dataLayer = window.dataLayer || [];
 
             function gtag() {

@@ -48,9 +48,11 @@ func notificationsSender() {
 func collectNotifications() map[uint64]map[types.EventName][]types.Notification {
 	notificationsByUserID := map[uint64]map[types.EventName][]types.Notification{}
 	var err error
-	err = collectValidatorBalanceDecreasedNotifications(notificationsByUserID)
-	if err != nil {
-		logger.Errorf("error collecting validator_balance_decreased notifications: %v", err)
+	if utils.Config.Notifications.ValidatorBalanceDecreasedNotificationsEnabled {
+		err = collectValidatorBalanceDecreasedNotifications(notificationsByUserID)
+		if err != nil {
+			logger.Errorf("error collecting validator_balance_decreased notifications: %v", err)
+		}
 	}
 	err = collectValidatorGotSlashedNotifications(notificationsByUserID)
 	if err != nil {
@@ -840,11 +842,14 @@ func collectMonitoringMachineOffline(notificationsByUserID map[uint64]map[types.
 		max(us.id) as id,
 		machine  
 	FROM users_subscriptions us
-	INNER JOIN stats_meta v ON us.user_id = v.user_id
+	JOIN (
+		SELECT max(id) as id, user_id, machine, max(created_trunc) as created_trunc from stats_meta
+		group by user_id, machine
+	) v on v.user_id = us.user_id 
 	WHERE us.event_name = $1 AND us.created_epoch <= $2 
+	AND us.event_filter = v.machine 
 	AND (us.last_sent_epoch < ($2 - 120) OR us.last_sent_epoch IS NULL)
 	AND v.created_trunc < now() - interval '4 minutes' AND v.created_trunc > now() - interval '3 hours'
-	AND v.id = (SELECT MAX(id) from stats_meta v2 where v.user_id = v2.user_id AND machine = us.event_filter) 
 	group by us.user_id, machine
 	`)
 }
@@ -874,8 +879,12 @@ func collectMonitoringMachineCPULoad(notificationsByUserID map[uint64]map[types.
 			us.user_id,
 			machine 
 		FROM users_subscriptions us 
-		INNER JOIN stats_meta v ON us.user_id = v.user_id 
-		WHERE v.id = (SELECT MAX(id) from stats_meta v2 where v.user_id = v2.user_id AND process = 'system' AND machine = us.event_filter) 
+		INNER JOIN (
+			SELECT max(id) as id, user_id, machine, max(created_trunc) as created_trunc from stats_meta
+			where process = 'system' 
+			group by user_id, machine
+		) v ON us.user_id = v.user_id 
+		WHERE v.machine = us.event_filter 
 		AND us.event_name = $1 AND us.created_epoch <= $2 
 		AND (us.last_sent_epoch < ($2 - 10) OR us.last_sent_epoch IS NULL)
 		AND v.created_trunc > now() - interval '1 hours' 
